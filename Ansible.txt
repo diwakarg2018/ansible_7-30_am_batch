@@ -1,0 +1,264 @@
+ansible 10.128.0.39 -i hosts -m win_ping
+ansible all -i hosts -m win_ping
+
+[wintel]
+10.128.0.39
+
+[wintel:vars]
+ansible_user=Admin
+ansible_password=Password@123
+ansible_connection=winrm
+ansible_winrm_server_cert_validation=ignore
+
+create user
+
+- name: Add a user
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Add User
+      win_user:
+        name: ansible
+        password: "@ns1bl3"
+        state: present
+
+deploy site
+
+# This playbook uses the win_get_url module to download a simple HTML file for IIS
+- name: Download simple web site 
+  hosts: all 
+
+  gather_facts: false
+  tasks:
+    - name: Download simple web site to 'C:\inetpub\wwwroot\ansible.html'
+      win_get_url:
+        url: 'https://raw.githubusercontent.com/thisdavejohnson/mywebapp/master/index.html'
+        dest: 'C:\inetpub\wwwroot\ansible.html'
+
+enable iis
+
+# This playbook installs and enables IIS on Windows hosts
+
+- name: Install IIS
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install IIS
+      win_feature:
+        name: "Web-Server"
+        state: present
+        restart: yes
+        include_sub_features: yes
+        include_management_tools: yes
+
+Install MSI
+
+- name: Install Apache from an MSI 
+  hosts: all 
+ 
+  tasks:
+    - name: Download the Apache installer
+      win_get_url:
+        url: 'http://mirror.cc.columbia.edu/pub/software/apache//httpd/binaries/win32/httpd-2.2.25-win32-x86-no_ssl.msi'
+        dest: 'C:\Users\Administrator\Downloads\httpd-2.2.25-win32-x86-no_ssl.msi'
+
+    - name: Install MSI
+      win_package: 
+        path: 'C:\Users\Administrator\Downloads\httpd-2.2.25-win32-x86-no_ssl.msi'
+        state: present
+
+ping 
+# This playbook uses the win_ping module to test connectivity to Windows hosts
+- name: Ping 
+  hosts: all 
+
+  tasks:
+  - name: ping
+    win_ping:
+
+test.yml
+
+- name: test raw module
+  hosts: all 
+  tasks:
+    - name: run ipconfig
+      raw: ipconfig
+      register: ipconfig
+    - debug: var=ipconfig
+
+- name: test stat module
+  hosts: windows
+  tasks:
+    - name: test stat module on file
+      win_stat: path="C:/Windows/win.ini"
+      register: stat_file
+
+    - debug: var=stat_file
+
+    - name: check stat_file result
+      assert:
+          that:
+             - "stat_file.stat.exists"
+             - "not stat_file.stat.isdir"
+             - "stat_file.stat.size > 0"
+             - "stat_file.stat.md5"
+
+Creating EC2 instance
+---
+- name: Create a new Demo EC2 instance
+  hosts: localhost
+  gather_facts: False
+
+  vars:
+      region: us-east-1
+      instance_type: t2.mirco
+      ami: ami-f4cc1de2  # Ubuntu 16.04 LTS
+      keypair: jenkins # pem file name
+  
+  tasks:
+
+    - name: Create an ec2 instance
+      ec2:
+         key_name: "{{ keypair }}"
+         group: einsteinish  # security group name
+         instance_type: "{{ instance_type}}"
+         image: "{{ ami }}"
+         wait: true
+         region: "{{ region }}"
+         count: 1  # default
+         count_tag:
+            Name: Demo
+         instance_tags:
+            Name: Demo
+         vpc_subnet_id: subnet-04c139eba854391d3
+         assign_public_ip: yes
+      register: ec2
+
+
+creating security group
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+      - name: create a security group in us-east-2
+        ec2_group:
+          name: dmz
+          description: an example ec2 group
+          region: us-east-2
+          aws_access_key: "AKIAIWJUADQPQB16LCFI"
+          aws_secret_key: "NCMx885+nNU51sKuprQeZeVsU9arRZc7hAX7Itez"
+          rules:
+            - proto: tcp
+              from_port: 80
+              to_port: 80
+              cidr_ip: 0.0.0.0/0
+        register: security_group
+
+apply patch for windows 2012
+
+- name : Apply patch for windows 2012
+  hosts: windows
+  vars:
+     hotfix: 'kb4012213'
+  tasks:
+    - name: Check ping , only for test pourpose
+      win_ping:
+        
+    - block:
+        - name: Check if {{ hotfix }} hotfix has been applied
+          raw: Get-Hotfix -Id "{{ hotfix }}"
+          register: hotfix_status
+          failed_when: false
+          changed_when: false
+        - name: show output status
+          debug:
+            var: hotfix_status
+
+    - block:
+        - win_file:     
+            path: "C:\\kbs\\archive"
+            state: directory
+        - win_get_url:
+            # LEt0s use internal server instead download from internet
+            url: "http://192.169.1.100/patch/W2k12/{{hotfix}}-x64.msu"
+            dest: "C:/kbs/{{hotfix}}-x64.msu"
+            force: no
+            # Unfortunately you can't use wusa directly to install windows updates.
+            # see https://support.microsoft.com/en-us/kb/2773898 for details
+            # you have to unpack the update file and then use dism.exe to install the cab
+            # This doesn't work
+            # - raw: 'wusa.exe C:\kbs\{{hotfix}}-x64.msu /quiet'
+            #  register: wusa_output
+        - name: unpack the hotfix if needed
+          raw: 'wusa C:\kbs\{{hotfix}}-x64.msu /extract:C:\kbs\archive'
+
+         # Explanation of random return code checks:
+         # https://msdn.microsoft.com/en-us/library/windows/desktop/aa368542(v=vs.85).aspx
+        - name: use dism to install the cab containing the hotfix
+          raw: 'dism.exe /online /add-package  /norestart /PackagePath:C:\\kbs\\archive\Windows8.1-{{hotfix}}-x64.cab'
+          register: dism_output
+          changed_when: "true"
+          failed_when: "dism_output.rc != 0 and dism_output.rc != 3010 and dism_output.rc != 1641"
+
+      # Block execution
+      when: "hotfix_status.rc == 1"
+
+install hotfix through chocolatey
+
+- name: Demonstrate bug with installing hotfixes over WinRM
+  hosts: all
+  tasks:
+    - name: Install Chocolatey
+      raw: "iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"
+    - name: Attempt to install KB3033929
+      win_chocolatey: name=kb3033929
+
+installing windows feature
+ansible all -m win_feature -a 'name=AD-Domain-Services'
+
+
+OEL patching through Ansible
+ansible -m shell -a "sudo yum updateinfo list sec" -i hosts all
+ansible -m shell -a "sudo yum update --security" -i hosts all
+ansible -m shell -a "sudo yum update --security -y" -i hosts all
+ansible -m shell -a "sudo yum updateinfo list sec" -i hosts all
+
+ansible -m shell -a "sudo reboot" -i hosts all
+ansible -m ping -i hosts all 
+
+
+
+
+---
+# tasks file for win_agent
+
+- name: Copying Splunk package to target
+  win_copy:
+    src: Splunk/splunkforwarder-7.3.1-bd63e13aa157-x64-release.msi
+    dest: C:\splunkforwarder-7.3.1-bd63e13aa157-x64-release.msi
+
+- name: Installing Splunk
+  win_shell: msiexec.exe /i C:\splunkforwarder-7.3.1-bd63e13aa157-x64-release.msi DEPLOYMENT_SERVER=""10.240.17.51:8089"" SET_ADMIN_USER=1 AGREETOLICENSE=Yes REBOOTPROMPT=""S"" MSIRESTARTMANAGERCONTROL=""Disable"" REBOOT=""ReallySuppress"" PROMPTROLLBACKCOST=""D""  /quiet
+
+
+--- 
+- 
+  hosts: localhost
+  name: "Ansible test"
+  tasks: 
+    - 
+      ec2: 
+        assign_public_ip: true
+        aws_access_key: AKIAZQEWG66MZI5VH5NM
+        aws_secret_key: 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
+        count: 1
+        group: default
+        image: ami-0dacb0c129b49f529
+        instance_type: t2.micro
+        key_name: aws_instance_Ansible
+        region: us-east-1
+        vpc_subnet_id: default
+        wait: true
+      name: "launching AWS instance using Ansible"
+
